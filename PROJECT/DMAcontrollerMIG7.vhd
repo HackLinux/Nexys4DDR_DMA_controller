@@ -8,10 +8,11 @@ use UNISIM.vcomponents.all;
 
 entity DMAcontrollerMIG7 is
 	Port (
-	CLK100MHZ : 	IN STD_LOGIC;						-- 100MHz clock, registers latch on leading edge
+	CLK100MHZ	 : 	IN STD_LOGIC;						-- 100MHz clock, registers latch on leading edge
+	CLK200MHZ    : IN STD_LOGIC;
 	---------------------------------------------------------------
 	-- AXI4 lite connections (as seen by SLAVE)
-	s_aresetn : in STD_LOGIC;						-- active low reset
+	RESET : in STD_LOGIC;						-- active low reset
 	-- address of write channel
 	-- handshake protocol
 	s_axi_awvalid : IN STD_LOGIC;					-- source indicates channel	data valid
@@ -25,7 +26,7 @@ entity DMAcontrollerMIG7 is
 	s_axi_wstrb : IN STD_LOGIC_VECTOR(3 DOWNTO 0);			-- active high byte mask for the data	
 	s_axi_wvalid : IN STD_LOGIC;
 	s_axi_wready : OUT STD_LOGIC;
-	-- write response channel
+	-- write response channel						-- this channel to be removed!
 	s_axi_bresp : OUT STD_LOGIC_VECTOR(1 DOWNTO 0);			-- write response value: see constants
 	s_axi_bvalid : OUT STD_LOGIC;					-- BVALID is dependent on WVALID, WREADY, AWVALID, and AWREADY,  
 	s_axi_bready : IN STD_LOGIC;
@@ -52,7 +53,7 @@ entity DMAcontrollerMIG7 is
 	t_axi_arvalid : IN  std_logic;
 	t_axi_arready : OUT  std_logic;
 	-- read/read-response channel
-	t_axi_rdata : OUT  std_logic_vector(31 downto 0);
+	t_axi_rdata : OUT  std_logic_vector(127 downto 0);
 	t_axi_rresp : OUT  std_logic_vector(1 downto 0);			
 	t_axi_rlast : OUT  std_logic;					-- set high to indicate last data word
 	t_axi_rvalid : OUT  std_logic;
@@ -69,13 +70,13 @@ entity DMAcontrollerMIG7 is
 										-- addr needs to be incremented for each new command
 	-- write information
 		-- write data must preceed WRITE command or follow within 2 clock cycles
-	app_wdf_data         : out    std_logic_vector(63 downto 0);	-- 64 bit data since 16 ddr2 lines and 2:1 MIG7 clocking
-	app_wdf_mask         : out    std_logic_vector(7 downto 0);	-- active high byte mask for the data	
+	app_wdf_data         : out    std_logic_vector(127 downto 0);	-- 64 bit data since 16 ddr2 lines and 2:1 MIG7 clocking
+	app_wdf_mask         : out    std_logic_vector(15 downto 0);	-- active high byte mask for the data	
 	app_wdf_wren         : out    std_logic;				-- user holds high throughout transfer to indicate valid data
 	app_wdf_rdy          : in     std_logic;				-- MIG registers data provided rdy is high
 	app_wdf_end          : out    std_logic;				-- set high to indicate last data word
 	-- read information
-	app_rd_data          : in	  std_logic_vector(63 downto 0);
+	app_rd_data          : in	  std_logic_vector(127 downto 0);
 	app_rd_data_end      : in     std_logic;				-- signals end of burst (not needed in handshake logic)
 	app_rd_data_valid    : in     std_logic;				-- valid read data is on the bus
 	-- user
@@ -107,8 +108,150 @@ constant AXI_INCR          	     : std_logic_vector(1 downto 0) := "01";
 constant AXI_OKAY		     : std_logic_vector(1 downto 0) := "00";
 constant AXI_SLVERR		     : std_logic_vector(1 downto 0) := "10";
 
+type handshake_type is (pending, confirm);
+type arbiter_type is (s_axi_read, s_axi_write, t_axi_read, none);
+
+signal s_axi_aw_state, s_axi_w_state, s_axi_ar_state : handshake_type;
+signal s_axi_aw_state_n, s_axi_w_state_n, s_axi_ar_state_n : handshake_type;
+signal arbiter : arbiter_type;
+signal s_axi_wlanes, s_axi_rlanes : STD_LOGIC_VECTOR(3 DOWNTO 2);	
+
 begin
 
+-- MIG7 overall control
+ui_clk <= CLK200MHZ;
+ui_clk_sync_rst <= RESET;
+app_sr_req <= '0';
+app_ref_req <= '0';
+app_zq_req <= '0';
+
+-- registered signals
+process 
+begin
+	wait until rising_edge(CLK100MHZ);
+	if RESET = '1' or init_calib_complete = '0' then
+		state <= idle;
+		s_axi_aw_state <= pending;
+		s_axi_w_state <= pending;
+		s_axi_ar_state <= pending;
+		s_axi_rlanes <= "00";
+	else
+		state <= state_n;
+		s_axi_aw_state <= s_axi_aw_state_n;
+		s_axi_w_state <= s_axi_w_state_n;	
+		s_axi_ar_state <= s_axi_ar_state_n;
+		
+		-- recursive state machine logic
+		if arbiter = s_axi_read then
+			s_axi_rlanes <= s_axi_araddr(3 downto 2);
+		end if;
+	end if;
+end process;
+
+-- combinational arbitration
+process (s_axi_aw_valid, s_axi_wvalid, s_axi_ar_valid, t_axi_ar_valid, init_calib_complete)
+begin
+	if init_calib_complete = '1' then
+		if s_axi_ar_valid = '1' then
+			arbiter <= s_axi_read;
+		elsif s_axi_aw_valid = '1' and s_axi_w_valid = '1' then
+			arbiter <= s_axi_write;
+		elsif t_axi_ar_valid = '1' then
+			arbiter <= t_axi_read;
+		else 
+			arbiter <= none;
+		end if;
+	else
+		arbiter <= none;
+	end if;
+end process;
+
+-- handshake next state logic
+process (s_axi_aw_state, s_axi_awvalid, app_rdy, s_axi_w_state, s_axi_wvalid, app_wdf_rdy)
+begin
+	-- s_axi_aw
+	case s_axi_aw_state is
+	when pending =>
+		if s_axi_awvalid = '1' and app_rdy = '1' and arbiter = s_axi_write then
+			s_axi_aw_state_n <= confirm;
+		else
+			s_axi_aw_state_n <= pending;
+		end if;
+	when confirm =>
+		s_axi_aw_state_n <= pending;
+	end case;
+
+	-- s_axi_w
+	case s_axi_w_state is
+	when pending =>
+		if s_axi_wvalid = '1' and app_wdf_rdy = '1' and arbiter = s_axi_write then
+			s_axi_w_state_n <= confirm;
+		else
+			s_axi_w_state_n <= pending;
+		end if;
+	when confirm =>										
+		s_axi_w_state_n <= pending;
+	end case;	
+	
+	-- s_axi_ar
+	case s_axi_ar_state is
+	when pending =>
+		if s_axi_arvalid = '1' and app_rdy = '1' and arbiter = s_axi_read then
+			s_axi_ar_state_n <= confirm;
+		else
+			s_axi_ar_state_n <= pending;
+		end if;
+	when confirm =>
+		s_axi_ar_state_n <= pending;
+	end case;	
+	
+end process;
+
+-- combinatorial state-dependent outputs
+
+-- AXI4
+with s_axi_aw_state select s_axi_awready <= '1' when confirm, '0' when others;
+with s_axi_w_state  select s_axi_wready  <= '1' when confirm, '0' when others;		-- aw and w may signal ready separately.  need to fix control unit for this!
+with s_axi_ar_state select s_axi_arready <= '1' when confirm, '0' when others;
+
+s_axi_bresp <= AXI_OKAY;
+s_axi_bvalid <= '1';								-- violation of channel dependency, rather remove this channel!
+
+s_axi_rdata <= app_rd_data;							-- assume that s_axi_ready is always '1'
+s_axi_rvalid <= app_rd_data_valid;
+s_axi_rresp <= AXI_OKAY;
+
+with s_axi_rlanes select
+	s_axi_rdata <= 	app_rd_data(31 downto 0)	when "00",
+				app_rd_data(63 downto 31)	when "01",
+				app_rd_data(95 downto 64)	when "10",
+				app_rd_data(127 downto 96)	when others;
+				
+t_axi_rresp <= AXI_OKAY;	
+t_axi_rdata <= app_rd_data;
+	
+
+-- MIG UI			
+with arbiter select app_cmd <= MIG_WRITE when s_axi_write, MIG_READ when others;
+
+with arbiter select app_addr <= s_axi_awaddr(26 downto 0) when s_axi_write,
+			    s_axi_araddr(26 downto 0) when others;
+
+app_en <= '1' when 	(arbiter = s_axi_write and s_axi_aw_state = pending) or
+			(arbiter = s_axi_read and s_axi_ar_state = pending) 
+		else 	'0';
+		
+s_axi_wlanes <= s_axi_awaddr(3 downto 2);
+with s_axi_wlanes select
+	app_wdf_mask <=	"000000000000" & s_axi_wstrb 	when "00",
+				"00000000" & s_axi_wstrb & "0000" 	when "01",
+				"0000" & s_axi_wstrb & "00000000" 	when "10",
+				s_axi_wstrb & "000000000000"	when others;
+				
+app_wdf_data <= s_axi_wdata & s_axi_wdata & s_axi_wdata & s_axi_wdata;	
+	
+with arbiter select app_wdf_wren <= '1' when s_axi_write, '0' when others;
+with arbiter select app_wdf_end <= '1' when s_axi_write, '0' when others;
 
 end RTL;
 
