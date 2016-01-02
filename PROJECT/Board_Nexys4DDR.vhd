@@ -65,8 +65,7 @@ COMPONENT DMAcontrollerMIG7
 	t_axi_rlast : OUT  std_logic;					-- set high to indicate last data word
 	t_axi_rvalid : OUT  std_logic;
 	t_axi_rready : IN  std_logic;
-	ui_clk               : in     std_logic;				-- CLOCK
-	ui_clk_sync_rst      : in     std_logic;				-- active-high reset
+	sys_clk_i		: out	  std_logic;				-- 100 MHz
 	app_en               : out    std_logic;				-- user holds app_en high with a valid app_cmd until app_rdy is asserted
 	app_cmd              : out    std_logic_vector(2 downto 0);	-- see VDHL constants
 	app_rdy              : in     std_logic;				-- MIG7 registers a command provided rdy is high
@@ -85,11 +84,14 @@ COMPONENT DMAcontrollerMIG7
 	app_ref_ack          : in     std_logic;				-- disregard
 	app_zq_req           : out    std_logic;				-- tie to '0'
 	app_zq_ack           : in     std_logic;				-- disregard
-	init_calib_complete  : in     std_logic				-- MIG7 requires 50-60uS to complete calibraton in simulator
+	ui_clk               : in    std_logic;				-- CLOCK
+	ui_clk_sync_rst      : in    std_logic;				-- active-high reset	
+	init_calib_complete  : in     std_logic;				-- MIG7 requires 50-60uS to complete calibraton in simulator
+	sys_rst		: out	std_logic
 	);		
 END COMPONENT;
 
-component ddr
+component MIG7
    port (
       -- Inouts
       ddr2_dq              : inout std_logic_vector(15 downto 0);
@@ -108,15 +110,14 @@ component ddr
       ddr2_dm              : out   std_logic_vector(1 downto 0);
       ddr2_odt             : out   std_logic_vector(0 downto 0);
       -- Inputs
-      sys_clk_i            : in    std_logic;
-      sys_rst              : in    std_logic;
+      sys_clk_i	      : in	std_logic;
       -- user interface signals
       app_addr             : in    std_logic_vector(26 downto 0);
       app_cmd              : in    std_logic_vector(2 downto 0);
       app_en               : in    std_logic;
       app_wdf_data         : in    std_logic_vector(127 downto 0);
       app_wdf_end          : in    std_logic;
-      app_wdf_mask         : in    std_logic_vector(7 downto 0);
+      app_wdf_mask         : in    std_logic_vector(15 downto 0);
       app_wdf_wren         : in    std_logic;
       app_rd_data          : out   std_logic_vector(127 downto 0);
       app_rd_data_end      : out   std_logic;
@@ -132,12 +133,14 @@ component ddr
       ui_clk               : out   std_logic;
       ui_clk_sync_rst      : out   std_logic;
       --device_temp_i        : in    std_logic_vector(11 downto 0);
-      init_calib_complete  : out   std_logic);
+      init_calib_complete  : out   std_logic;
+      sys_rst		 	: in	std_logic);
 end component;
 
 component DMAtest
    port (
    RESET                : in    std_logic;
+   CLK100MHZ		   : in std_logic;
    s_axi_awvalid : OUT STD_LOGIC;					-- source indicates channel	data valid
    s_axi_awready : IN STD_LOGIC;					-- destination indicates that it can accept channel data
    s_axi_awaddr : OUT STD_LOGIC_VECTOR(31 DOWNTO 0);			-- true byte addressing											
@@ -170,7 +173,8 @@ component DMAtest
 end component;
 
 signal CLK100MHZ, CLK200MHZ : STD_LOGIC;
-signal RESET, RESET_LO :STD_LOGIC;
+signal RESET : STD_LOGIC;
+signal LOCKED : STD_LOGIC;
 signal s_aresetn :  STD_LOGIC;                                          -- active low reset
 signal s_axi_awvalid :  STD_LOGIC;                                   -- source indicates channel       data valid
 signal s_axi_awready :  STD_LOGIC;                                   -- destination indicates that it can accept channel data
@@ -200,6 +204,8 @@ signal t_axi_rresp :   std_logic_vector(1 downto 0);
 signal t_axi_rlast :   std_logic;                                   -- set high to indicate last data word
 signal t_axi_rvalid :   std_logic;
 signal t_axi_rready :   std_logic;
+signal sys_clk_i	: std_logic;
+signal clk_ref_i	: std_logic;
 signal app_en               :     std_logic;                            -- user holds app_en high with a valid app_cmd until app_rdy is asserted
 signal app_cmd              :     std_logic_vector(2 downto 0);       -- see VDHL constants
 signal app_rdy              :      std_logic;                            -- MIG7 registers a command provided rdy is high
@@ -218,7 +224,10 @@ signal app_ref_req          :     std_logic;                            -- tie t
 signal app_ref_ack          :      std_logic;                            -- disregard
 signal app_zq_req           :     std_logic;                            -- tie to '0'
 signal app_zq_ack           :      std_logic;                            -- disregard
+signal ui_clk               : std_logic;
+signal ui_clk_sync_rst      : std_logic;
 signal init_calib_complete  :      std_logic;                            -- MIG7 requires 50-60uS to complete calibraton in simulator
+signal sys_rst : std_logic;
 
 begin
 
@@ -263,8 +272,7 @@ inst_DMAcontrollerMIG7: DMAcontrollerMIG7
   t_axi_rlast => t_axi_rlast,
   t_axi_rvalid => t_axi_rvalid,
   t_axi_rready => t_axi_rready,
-  ui_clk => ui_clk,
-  ui_clk_sync_rst => ui_clk_sync_rst,
+  sys_clk_i => sys_clk_i,
   app_en => app_en,
   app_cmd => app_cmd,
   app_rdy => app_rdy,
@@ -283,7 +291,10 @@ inst_DMAcontrollerMIG7: DMAcontrollerMIG7
   app_ref_ack => app_ref_ack,
   app_zq_req => app_zq_req,
   app_zq_ack => app_zq_ack,
-  init_calib_complete => init_calib_complete
+  ui_clk => ui_clk,
+  ui_clk_sync_rst => ui_clk_sync_rst, 
+  init_calib_complete => init_calib_complete,
+  sys_rst => sys_rst
   );
   
 inst_MIG7: MIG7
@@ -302,20 +313,19 @@ inst_MIG7: MIG7
      ddr2_cs_n            => ddr2_cs_n,
      ddr2_dm              => ddr2_dm,
      ddr2_odt             => ddr2_odt,
-     sys_clk_i            => sys_clk_i,
-     sys_rst              => sys_rst,
-     app_addr             => mem_addr,
-     app_cmd              => mem_cmd,
-     app_en               => mem_en,
-     app_wdf_data         => mem_wdf_data,
-     app_wdf_end          => mem_wdf_end,
-     app_wdf_mask         => mem_wdf_mask,
-     app_wdf_wren         => mem_wdf_wren,
-     app_rd_data          => mem_rd_data,
-     app_rd_data_end      => mem_rd_data_end,
-     app_rd_data_valid    => mem_rd_data_valid,
-     app_rdy              => mem_rdy,
-     app_wdf_rdy          => mem_wdf_rdy,
+     sys_clk_i 	     => sys_clk_i,
+     app_addr             => app_addr,
+     app_cmd              => app_cmd,
+     app_en               => app_en,
+     app_wdf_data         => app_wdf_data,
+     app_wdf_end          => app_wdf_end,
+     app_wdf_mask         => app_wdf_mask,
+     app_wdf_wren         => app_wdf_wren,
+     app_rd_data          => app_rd_data,
+     app_rd_data_end      => app_rd_data_end,
+     app_rd_data_valid    => app_rd_data_valid,
+     app_rdy              => app_rdy,
+     app_wdf_rdy          => app_wdf_rdy,
      app_sr_req           => app_sr_req,
      app_sr_active        => app_sr_active,
      app_ref_req          => app_ref_req,
@@ -323,13 +333,15 @@ inst_MIG7: MIG7
      app_zq_req           => app_zq_req,
      app_zq_ack           => app_zq_ack,
      ui_clk               => ui_clk,
-     ui_clk_sync_rst      => ui_clk_sync_rst,
-     init_calib_complete  => mem_init_calib_complete
+     ui_clk_sync_rst      => ui_clk_sync_rst,    
+     init_calib_complete  => init_calib_complete,
+     sys_rst => sys_rst
      );
   
 inst_DMAtest: DMAtest
         port map (
 	RESET => RESET,
+	CLK100MHZ => CLK100MHZ,
 	s_axi_awvalid => s_axi_awvalid,
 	s_axi_awready => s_axi_awready,
 	s_axi_awaddr =>  s_axi_awaddr,                                                                       

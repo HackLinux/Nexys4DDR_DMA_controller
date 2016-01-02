@@ -6,6 +6,7 @@ use IEEE.NUMERIC_STD.ALL;
 entity DMAtest is
    port (
    RESET                : in    std_logic;
+   CLK100MHZ	: in std_logic;
    -- address of write channel
    -- handshake protocol
    s_axi_awvalid : OUT STD_LOGIC;					-- source indicates channel	data valid
@@ -56,27 +57,72 @@ end DMAtest;
 
 architecture RTL of DMAtest is
 
+signal tick1, tick2, tick3 : std_logic;
+
 begin
 
 process
 begin
+	tick1 <= '0';
 	s_axi_awvalid <= '0';
+	s_axi_wstrb <= (others=> '0');
 	s_axi_awaddr <= (others => '0');											
+	wait until RESET = '0';
+	s_axi_awaddr <= "00000000000000000000000000000100";
+	s_axi_wstrb <= "1111";
+	s_axi_awvalid <= '1';
+	wait until rising_edge(CLK100MHZ) and s_axi_awready = '1';
+	s_axi_awvalid <= '0';
+	tick1 <= '1';
+	wait;
+end process;
+
+process
+begin
+	tick2 <= '0';
+	s_axi_bready <= '1';	
 	s_axi_wdata <= (others => '0');
 	s_axi_wstrb <= (others => '0');	
+	s_axi_wvalid <= '0';	
+	wait until RESET = '0';
+	s_axi_wdata <= X"FEDCBA98";
+	s_axi_wstrb <= "1111";
+	s_axi_wvalid <= '1';
+	wait until rising_edge(CLK100MHZ) and s_axi_wready = '1';
 	s_axi_wvalid <= '0';
-	s_axi_bready <= '0';
+	tick2 <= '1';
+	wait;
+end process;
+
+process
+begin
+	tick3 <= '0';
 	s_axi_araddr <= (others => '0');
 	s_axi_arvalid <= '0';
 	s_axi_rready <= '0';
+	wait until tick1 = '1' and tick2 = '1' and rising_edge(CLK100MHZ);
+	s_axi_araddr <= "00000000000000000000000000000100";
+	s_axi_arvalid <= '1';
+	wait until rising_edge(CLK100MHZ) and s_axi_arready = '1';
+	s_axi_arvalid <= '0';
+	tick3 <= '1';
+	wait;
+end process;
+
+process
+begin
 	t_axi_araddr <= (others => '0');
 	t_axi_arlen <= (others => '0');
 	t_axi_arsize <= (others => '0');
 	t_axi_arburst <= (others => '0');
 	t_axi_arvalid <= '0';
 	t_axi_rready <= '0';
-	wait until RESET = '0';
+	wait until tick3 = '1' and rising_edge(CLK100MHZ);	
+	t_axi_arlen <= "00000011";
+	t_axi_arvalid <= '1';
+	wait until rising_edge(CLK100MHZ) and t_axi_arready = '1';
+	t_axi_arvalid <= '0';
 	wait;
 end process;
- 
+
 end RTL;
