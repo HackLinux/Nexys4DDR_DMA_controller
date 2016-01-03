@@ -8,14 +8,12 @@ use UNISIM.vcomponents.all;
 
 entity DMAcontrollerMIG7 is
 	Port (
-	CLK100MHZ	 : 	IN STD_LOGIC;						-- 100MHz clock, registers latch on leading edge
-	CLK200MHZ    : IN STD_LOGIC;
-	RESET : in STD_LOGIC;	
-	---------------------------------------------------------------
-	-- AXI4 lite connections (as seen by SLAVE)
+	CLK100MHZ	: IN STD_LOGIC;
+	CLK200MHZ	: IN STD_LOGIC;
+	RESET 		: IN STD_LOGIC;	
+	-- AXI4 lite connections (as seen by SLAVE)--------------------   's' channel is connected to the CPU
 	-- address of write channel
-	-- handshake protocol
-	s_axi_awvalid : IN STD_LOGIC;					-- source indicates channel	data valid
+	s_axi_awvalid : IN STD_LOGIC;					-- handshake protocol: source indicates channel data valid
 	s_axi_awready : OUT STD_LOGIC;					-- destination indicates that it can accept channel data
 											-- transfer occurs only when valid and ready are high
 											-- destination may hold ready high or wait for valid
@@ -39,8 +37,7 @@ entity DMAcontrollerMIG7 is
 	s_axi_rresp : OUT STD_LOGIC_VECTOR(1 DOWNTO 0);			-- read response value: see constants
 	s_axi_rvalid : OUT STD_LOGIC;					-- RVALID is dependent on ARVALID and ARREADY
 	s_axi_rready : IN STD_LOGIC;
-	----------------------------------------------------------------
-	-- AIX4 read channel connections (as seen by SLAVE)
+	-- AIX4 read channel connections (as seen by SLAVE)-------------  't' channel is connected to the VGA buffer
 	-- address of read channel
 	t_axi_araddr : IN  std_logic_vector(31 downto 0);		-- true byte addressing	
 										-- MASTER indicates only the first byte address, SLAVE will calculate the rest
@@ -58,50 +55,115 @@ entity DMAcontrollerMIG7 is
 	t_axi_rlast : OUT  std_logic;					-- set high to indicate last data word
 	t_axi_rvalid : OUT  std_logic;
 	t_axi_rready : IN  std_logic;
-	----------------------------------------------------------------
-	-- MIG7 user interface signals
-	sys_clk_i		: out	  std_logic;				-- 200MHZ CLOCK
-	-- user command information
-	app_en               : out    std_logic;				-- user holds app_en high with a valid app_cmd until app_rdy is asserted
-	app_cmd              : out    std_logic_vector(2 downto 0);	-- see VDHL constants
-	app_rdy              : in     std_logic;				-- MIG7 registers a command provided rdy is high
-	app_addr             : out    std_logic_vector(26 downto 0);	-- true byte addressing
-										-- addr needs to be incremented for each new command
-	-- write information
-		-- write data must preceed WRITE command or follow within 2 clock cycles
-	app_wdf_data         : out    std_logic_vector(127 downto 0);	-- 64 bit data since 16 ddr2 lines and 2:1 MIG7 clocking
-	app_wdf_mask         : out    std_logic_vector(15 downto 0);	-- active high byte mask for the data	
-	app_wdf_wren         : out    std_logic;				-- user holds high throughout transfer to indicate valid data
-	app_wdf_rdy          : in     std_logic;				-- MIG registers data provided rdy is high
-	app_wdf_end          : out    std_logic;				-- set high to indicate last data word
-	-- read information
-	app_rd_data          : in	  std_logic_vector(127 downto 0);
-	app_rd_data_end      : in     std_logic;				-- signals end of burst (not needed in handshake logic)
-	app_rd_data_valid    : in     std_logic;				-- valid read data is on the bus
-	-- user
-	app_sr_req           : out    std_logic;				-- tie to '0'
-	app_sr_active        : in     std_logic;				-- disregard
-	-- user controlled DRAM refresh
-	app_ref_req          : out    std_logic;				-- tie to '0'
-	app_ref_ack          : in     std_logic;				-- disregard
-	-- user controllerd ZQ calibration
-	app_zq_req           : out    std_logic;				-- tie to '0'
-	app_zq_ack           : in     std_logic;				-- disregard
-	-- user interface
-	ui_clk               : in    std_logic;				-- CLOCK
-	ui_clk_sync_rst      : in    std_logic;				-- active-high reset
-	-- calibration complete		
-	init_calib_complete  : in     std_logic;				-- MIG7 requires 50-60uS to complete calibraton in simulator
-	-- reset
-	sys_rst		: out	std_logic				-- active lo reset
+	-- DDR2 memory connections -------------------------------------
+      	-- Inouts
+	ddr2_dq              : inout std_logic_vector(15 downto 0);
+	ddr2_dqs_p           : inout std_logic_vector(1 downto 0);
+	ddr2_dqs_n           : inout std_logic_vector(1 downto 0);
+	-- Outputs
+	ddr2_addr            : out   std_logic_vector(12 downto 0);
+	ddr2_ba              : out   std_logic_vector(2 downto 0);
+	ddr2_ras_n           : out   std_logic;
+	ddr2_cas_n           : out   std_logic;
+	ddr2_we_n            : out   std_logic;
+	ddr2_ck_p            : out   std_logic_vector(0 downto 0);
+	ddr2_ck_n            : out   std_logic_vector(0 downto 0);
+	ddr2_cke             : out   std_logic_vector(0 downto 0);
+	ddr2_cs_n            : out   std_logic_vector(0 downto 0);
+	ddr2_dm              : out   std_logic_vector(1 downto 0);
+	ddr2_odt             : out   std_logic_vector(0 downto 0)
 	);			
 end DMAcontrollerMIG7;
 
--- Restricted AXI4 channel relationships
--- AXI4 defines minimal inter-channel dependencies. To eliminate the need for additional FIFO buffers, this device assumes that 
--- wvalid will be asserted on the same cycle as awvalid
+-- There are a number of deviations from the AXI4 protocol as follows:
+-- 1. The write response channel axi_b is removed since the MIG7 does not confirm a write response itself
+-- 2. The read responese signals axi_rresp are removed since the MIG7 does not confirm a read response itself
+-- 3. Read channels are assumed to be always ready after a read request; axi_rready signals are removed
+--	this saves implementing additional buffers in the DMA controller
+-- 4. The burst size axi_arsize is removed since it is assumed that all bursts are the full width of the databus
+-- 5. The burst type axi_abburst is removes since it is assumed that alll bursts are AXI_INCR
 
 architecture RTL of DMAcontrollerMIG7 is
+
+component MIG7
+   port (
+      -- Inouts
+      ddr2_dq              : inout std_logic_vector(15 downto 0);
+      ddr2_dqs_p           : inout std_logic_vector(1 downto 0);
+      ddr2_dqs_n           : inout std_logic_vector(1 downto 0);
+      -- Outputs
+      ddr2_addr            : out   std_logic_vector(12 downto 0);
+      ddr2_ba              : out   std_logic_vector(2 downto 0);
+      ddr2_ras_n           : out   std_logic;
+      ddr2_cas_n           : out   std_logic;
+      ddr2_we_n            : out   std_logic;
+      ddr2_ck_p            : out   std_logic_vector(0 downto 0);
+      ddr2_ck_n            : out   std_logic_vector(0 downto 0);
+      ddr2_cke             : out   std_logic_vector(0 downto 0);
+      ddr2_cs_n            : out   std_logic_vector(0 downto 0);
+      ddr2_dm              : out   std_logic_vector(1 downto 0);
+      ddr2_odt             : out   std_logic_vector(0 downto 0);
+      -- Inputs
+      sys_clk_i	      : in	std_logic;     
+      -- user interface signals
+      app_addr             : in    std_logic_vector(26 downto 0);
+      app_cmd              : in    std_logic_vector(2 downto 0);
+      app_en               : in    std_logic;
+      app_wdf_data         : in    std_logic_vector(127 downto 0);
+      app_wdf_end          : in    std_logic;
+      app_wdf_mask         : in    std_logic_vector(15 downto 0);
+      app_wdf_wren         : in    std_logic;
+      app_rd_data          : out   std_logic_vector(127 downto 0);
+      app_rd_data_end      : out   std_logic;
+      app_rd_data_valid    : out   std_logic;
+      app_rdy              : out   std_logic;
+      app_wdf_rdy          : out   std_logic;
+      app_sr_req           : in    std_logic;
+      app_sr_active        : out   std_logic;
+      app_ref_req          : in    std_logic;
+      app_ref_ack          : out   std_logic;
+      app_zq_req           : in    std_logic;
+      app_zq_ack           : out   std_logic;
+      ui_clk               : out   std_logic;
+      ui_clk_sync_rst      : out   std_logic;
+      init_calib_complete  : out   std_logic;
+      sys_rst		      : in	std_logic);
+end component;
+
+-- MIG7 user interface signals
+signal sys_clk_i		: std_logic;				-- in: 200MHZ CLOCK
+signal sys_rst		: std_logic;				-- in: active lo reset
+-- user command information
+signal app_en               : std_logic;				-- in: user holds app_en high with a valid app_cmd until app_rdy is asserted
+signal app_cmd              : std_logic_vector(2 downto 0);	-- in: see VDHL constants
+signal app_rdy              : std_logic;				-- out MIG7 registers a command provided rdy is high
+signal app_addr             : std_logic_vector(26 downto 0);	-- in: true byte addressing
+									-- addr needs to be incremented for each new command
+-- write information
+	-- write data must preceed WRITE command or follow within 2 clock cycles
+signal app_wdf_data         : std_logic_vector(127 downto 0);	-- in: 64 bit data since 16 ddr2 lines and 2:1 MIG7 clocking
+signal app_wdf_mask         : std_logic_vector(15 downto 0);	-- in: active high byte mask for the data (note this is a mask not a write strobe)	
+signal app_wdf_wren         : std_logic;				-- in: user holds high throughout transfer to indicate valid data
+signal app_wdf_rdy          : std_logic;				-- out MIG registers data provided rdy is high
+signal app_wdf_end          : std_logic;				-- in: set high to indicate last data word
+-- read information
+signal app_rd_data          : std_logic_vector(127 downto 0);	-- out
+signal app_rd_data_end      : std_logic;				-- out signals end of burst (not needed in handshake logic)
+signal app_rd_data_valid    : std_logic;				-- out valid read data is on the bus
+-- user
+signal app_sr_req           : std_logic;				-- in: tie to '0'
+signal app_sr_active        : std_logic;				-- out: disregard
+-- user controlled DRAM refresh
+signal app_ref_req          : std_logic;				-- in: tie to '0'
+signal app_ref_ack          : std_logic;				-- out disregard
+-- user controllerd ZQ calibration
+signal app_zq_req           : std_logic;				-- in: tie to '0'
+signal app_zq_ack           : std_logic;				-- out disregard
+-- user interface
+signal ui_clk               : std_logic;				-- out CLOCK
+signal ui_clk_sync_rst      : std_logic;				-- out reset
+-- calibration complete		
+signal init_calib_complete  : std_logic;				-- out MIG7 requires 50-60uS to complete calibraton in simulator
 
 -- MIG7 user interface app_cmd commands
 constant MIG_WRITE               : std_logic_vector(2 downto 0) := "000";
@@ -126,6 +188,7 @@ signal s_axi_arlen_r1 : STD_LOGIC_VECTOR(0 downto 0);
 
 begin
 
+
 -- MIG7 overall control
 sys_clk_i <= CLK200MHZ;
 sys_rst <= not RESET;
@@ -143,6 +206,8 @@ begin
 		s_axi_ar_state <= pending;
 		t_axi_ar_state <= pending;		
 		s_axi_rlanes <= "00";
+		t_axi_araddr_r <= (others =>'0');
+		t_axi_arlen_r <= (others=>'0');
 		t_axi_arlen_r1 <= (others=>'0');
 		s_axi_arlen_r1 <= (others=>'0');
 	else
@@ -153,33 +218,29 @@ begin
 
 		-- recursive state machine logic
 		if arbiter = s_axi_read then
-			s_axi_rlanes <= s_axi_araddr(3 downto 2);
+			s_axi_rlanes <= s_axi_araddr(3 downto 2);				-- register the address lo bits so that the proper data can be transferred from
+		end if;									-- the 128bit MIG7 bus to 32bit AXI4 bus when it is received
+		
+		if arbiter = t_axi_read and app_rdy = '1' then				-- t_axi_araddr_r is incremented by 16 bytes (128bits) each read command
+			t_axi_araddr_r <= t_axi_araddr + 16;				-- to generate a burst-mode read
+		elsif arbiter = t_axi_read_seq and app_rdy = '1' then			-- a read command requires thatthe MIG7 is ready to recieve the command
+			t_axi_araddr_r <= t_axi_araddr_r + 16;				-- and that the arbiter is prioritizing it
 		end if;
 		
-		if arbiter = t_axi_read and app_rdy = '1' then
-			t_axi_araddr_r <= t_axi_araddr + 16;
-		elsif arbiter = t_axi_read_seq and app_rdy = '1' then
-			t_axi_araddr_r <= t_axi_araddr_r + 16;
-		else
-			t_axi_araddr_r <= (others =>'0');
+		if arbiter = t_axi_read and app_rdy = '1' then				-- t_axi_arlen_r is a counter that decemented with each successful read command
+			t_axi_arlen_r <= t_axi_arlen;					-- during a burst.  The arbiter will maintain the burst state whilst the counter
+		elsif arbiter = t_axi_read_seq and app_rdy = '1' then			-- is non-zero.  Note that in AXI convention axi_arlen = 0 indicates a burst
+			t_axi_arlen_r <= t_axi_arlen_r - 1;				-- length of 1 beat
 		end if;
 		
-		if arbiter = t_axi_read and app_rdy = '1' then
-			t_axi_arlen_r <= t_axi_arlen;
-		elsif arbiter = t_axi_read_seq and app_rdy = '1' then
-			t_axi_arlen_r <= t_axi_arlen_r - 1;
-		else
-			t_axi_arlen_r <= (others=>'0');
-		end if;
-		
-		if arbiter = t_axi_read and app_rdy = '1' then 
-			t_axi_arlen_r1 <= t_axi_arlen + 1;
-		elsif t_axi_arlen_r1 /= 0 and app_rd_data_valid = '1' then
-			t_axi_arlen_r1 <= t_axi_arlen_r1 - 1;
-		end if;
+		if arbiter = t_axi_read and app_rdy = '1' then 				-- t_axi_arlen_r1 is a counter that is decremented with each read receipt
+			t_axi_arlen_r1 <= t_axi_arlen + 1;					-- during a burst.  The arbiter will block any other read requests until 
+		elsif t_axi_arlen_r1 /= 0 and app_rd_data_valid = '1' then		-- all of the data for this channel has arrived.  This is very sub-optimal
+			t_axi_arlen_r1 <= t_axi_arlen_r1 - 1;				-- but simplifies channel signalling on read data receipt
+		end if;									-- an improvement will be made at a later stage
 	
-		if arbiter = s_axi_read and app_rdy = '1' then 
-			s_axi_arlen_r1 <= "1";
+		if arbiter = s_axi_read and app_rdy = '1' then 				-- as for the t channel, but as the s channel is AXI4 lite, the burst
+			s_axi_arlen_r1 <= "1";						-- size is always 1
 		elsif s_axi_arlen_r1 ="1" and app_rd_data_valid = '1' then
 			s_axi_arlen_r1 <= "0";
 		end if;	
@@ -187,17 +248,21 @@ begin
 	end if;
 end process;
 
--- combinational arbitration
+-- Arbitrator
+	-- this logic selects one of the AXI4 channels that may command the salve should multiple channels issue a command at the same time
+	-- t_axi_read_seq is a synthetic channel that generates all of the addresses required for a burst following a t_axi_read request
+	-- The present arbitration is very sub-optimal because the arbiter blocks during the latent period between a read-request and
+	-- provision of the read data. An improvement is planned at a later stage
 process (t_axi_arlen_r, s_axi_awvalid, s_axi_wvalid, s_axi_arvalid, t_axi_arvalid, init_calib_complete, t_axi_arlen_r1, s_axi_arlen_r1)
 begin
-	if init_calib_complete = '1' then
-		if t_axi_arlen_r /= 0 then
-			arbiter <= t_axi_read_seq;
-		elsif s_axi_arvalid = '1' and t_axi_arlen_r1 = 0 then
+	if init_calib_complete = '1' then						-- MIG7 cannot accept commands until calibration completes (~60us)
+		if t_axi_arlen_r /= 0 then						-- if a burst read on channel t is being processed, do not interrupt it
+			arbiter <= t_axi_read_seq;						-- this logic may be changed at a later date to prioritize the CPU
+		elsif s_axi_arvalid = '1' then					-- s channel read is highest priority
 			arbiter <= s_axi_read;
-		elsif s_axi_awvalid = '1' and s_axi_wvalid = '1' then
+		elsif s_axi_awvalid = '1' and s_axi_wvalid = '1' then		-- accept s channel write only when the address and the data are both valid
 			arbiter <= s_axi_write;
-		elsif t_axi_arvalid = '1' and s_axi_arlen_r1 = 0 then
+		elsif t_axi_arvalid = '1' and s_axi_arlen_r1 = 0 then		-- if a read on channel s has not yet retured, do not initiate a read on channel t
 			arbiter <= t_axi_read;
 		else 
 			arbiter <= none;
@@ -207,7 +272,10 @@ begin
 	end if;
 end process;
 
--- handshake next state logic
+-- AXI4 handshake logic
+	-- each AXI4 channel that commands the slave has a small state machine here for handshaking
+	-- It is responsible for signalling READY in response to VAILD provided that 
+	-- (i) the arbiter is allowing this channel to proceed and (ii) that the MIG7 has accepted the relvant command  
 process (s_axi_aw_state, s_axi_awvalid, app_rdy, s_axi_w_state, s_axi_wvalid, app_wdf_rdy, t_axi_ar_state, t_axi_arvalid, arbiter)
 begin
 	-- s_axi_aw
@@ -259,31 +327,32 @@ begin
 	end case;	
 end process;
 
--- combinatorial state-dependent outputs
-
--- AXI4
 with s_axi_aw_state select s_axi_awready <= '1' when confirm, '0' when others;
 with s_axi_w_state  select s_axi_wready  <= '1' when confirm, '0' when others;		-- aw and w may signal ready separately.  need to fix control unit for this!
 with s_axi_ar_state select s_axi_arready <= '1' when confirm, '0' when others;
 with t_axi_ar_state select t_axi_arready <= '1' when confirm, '0' when others;
 
+-- write response channel should be removed as it does not have any purpose
 s_axi_bresp <= AXI_OKAY;
-s_axi_bvalid <= '1';								-- violation of channel dependency, rather remove this channel!
+s_axi_bvalid <= '1';
 
-with s_axi_arlen_r1 select s_axi_rvalid <=  '0' when "0", app_rd_data_valid when others;
+-- s read channel
+with s_axi_arlen_r1 select s_axi_rvalid <=  '0' when "0", app_rd_data_valid when others;	-- if this channel is expecting data, then pass through data-valid signals
+-- read response should be removed as it does not have any purpose
 s_axi_rresp <= AXI_OKAY;
-with s_axi_rlanes select
+with s_axi_rlanes select										-- place data onto 32bit bus according to lo bits of original read address
 	s_axi_rdata <= 	app_rd_data(31 downto 0)	when "00",
 				app_rd_data(63 downto 31)	when "01",
 				app_rd_data(95 downto 64)	when "10",
 				app_rd_data(127 downto 96)	when others;
-				
+
+-- t channel read				
 with t_axi_arlen_r1 select t_axi_rvalid <= '0' when "00000000", app_rd_data_valid when others;				
 t_axi_rresp <= AXI_OKAY;	
 t_axi_rdata <= app_rd_data;
-t_axi_rlast <= '1' when t_axi_arlen_r1 = 1 and app_rd_data_valid = '1' else '0';
+t_axi_rlast <= '1' when t_axi_arlen_r1 = 1 and app_rd_data_valid = '1' else '0';		-- signal last beat	
 
--- MIG UI			
+-- MIG user interface
 with arbiter select app_cmd <= MIG_WRITE when s_axi_write, MIG_READ when others;
 
 with arbiter select app_addr <= s_axi_awaddr(26 downto 0) when s_axi_write,
@@ -291,23 +360,64 @@ with arbiter select app_addr <= s_axi_awaddr(26 downto 0) when s_axi_write,
 				t_axi_araddr(26 downto 0) when t_axi_read,
 			   	t_axi_araddr_r(26 downto 0) when others;
 
-app_en <= '1' when 	(arbiter = s_axi_write and s_axi_aw_state = pending) or
+app_en <= '1' when 	(arbiter = s_axi_write and s_axi_aw_state = pending) or			-- enable a command to the MIG7 when arbiter indictes a channel request
 			(arbiter = s_axi_read and s_axi_ar_state = pending) or
 			(arbiter = t_axi_read and t_axi_ar_state = pending) or
 			(arbiter = t_axi_read_seq)
 		else 	'0';
 		
-s_axi_wlanes <= s_axi_awaddr(3 downto 2);
-with s_axi_wlanes select
+s_axi_wlanes <= s_axi_awaddr(3 downto 2);								-- set write mask of 128bit MIG7 channel according to lo bits of
+with s_axi_wlanes select										-- address write, and also invert the byte strobe into a mask
 	app_wdf_mask <=	"111111111111" & not s_axi_wstrb 		when "00",
 				"11111111" & not s_axi_wstrb & "1111" 	when "01",
 				"1111" & not s_axi_wstrb & "11111111" 	when "10",
 				not s_axi_wstrb & "111111111111"		when others;
 				
-app_wdf_data <= s_axi_wdata & s_axi_wdata & s_axi_wdata & s_axi_wdata;	
+app_wdf_data <= s_axi_wdata & s_axi_wdata & s_axi_wdata & s_axi_wdata;			-- replicate 32bit write data onto 128bit bus and mask accordingly
 	
-with arbiter select app_wdf_wren <= '1' when s_axi_write, '0' when others;
+with arbiter select app_wdf_wren <= '1' when s_axi_write, '0' when others;			-- write data channel to MIG7
 with arbiter select app_wdf_end <= '1' when s_axi_write, '0' when others;
+
+inst_MIG7: MIG7
+  port map (
+     ddr2_dq              => ddr2_dq,
+     ddr2_dqs_p           => ddr2_dqs_p,
+     ddr2_dqs_n           => ddr2_dqs_n,
+     ddr2_addr            => ddr2_addr,
+     ddr2_ba              => ddr2_ba,
+     ddr2_ras_n           => ddr2_ras_n,
+     ddr2_cas_n           => ddr2_cas_n,
+     ddr2_we_n            => ddr2_we_n,
+     ddr2_ck_p            => ddr2_ck_p,
+     ddr2_ck_n            => ddr2_ck_n,
+     ddr2_cke             => ddr2_cke,
+     ddr2_cs_n            => ddr2_cs_n,
+     ddr2_dm              => ddr2_dm,
+     ddr2_odt             => ddr2_odt,
+     sys_clk_i 	     => sys_clk_i,
+     app_addr             => app_addr,
+     app_cmd              => app_cmd,
+     app_en               => app_en,
+     app_wdf_data         => app_wdf_data,
+     app_wdf_end          => app_wdf_end,
+     app_wdf_mask         => app_wdf_mask,
+     app_wdf_wren         => app_wdf_wren,
+     app_rd_data          => app_rd_data,
+     app_rd_data_end      => app_rd_data_end,
+     app_rd_data_valid    => app_rd_data_valid,
+     app_rdy              => app_rdy,
+     app_wdf_rdy          => app_wdf_rdy,
+     app_sr_req           => app_sr_req,
+     app_sr_active        => app_sr_active,
+     app_ref_req          => app_ref_req,
+     app_ref_ack          => app_ref_ack,
+     app_zq_req           => app_zq_req,
+     app_zq_ack           => app_zq_ack,
+     ui_clk               => ui_clk,
+     ui_clk_sync_rst      => ui_clk_sync_rst,    
+     init_calib_complete  => init_calib_complete,
+     sys_rst => sys_rst
+     );
 
 end RTL;
 
